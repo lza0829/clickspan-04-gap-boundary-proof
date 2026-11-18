@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from app.db import connect
+from app.modules import gap_boundary_proof
 from app.seed import idle_timeout_sec
 from app.services import ingest as ingest_svc
 from app.services import sessions as sess_svc
@@ -19,6 +20,9 @@ def overview():
                 "SELECT COUNT(*) AS c FROM hits WHERE channel='primary'"
             ).fetchone()["c"],
             "quarantine": conn.execute("SELECT COUNT(*) AS c FROM quarantine").fetchone()["c"],
+            "gap_boundaries": conn.execute(
+                "SELECT COUNT(*) AS c FROM gap_boundaries"
+            ).fetchone()["c"],
             "idle_timeout_sec": idle_timeout_sec(conn),
         }
     finally:
@@ -89,6 +93,31 @@ def session_proofs(session_id: str | None = None):
                 "SELECT * FROM session_proofs ORDER BY id DESC LIMIT 50"
             ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@router.get("/gap-boundaries")
+def list_gap_boundaries(visitor_id: str | None = None, session_id: str | None = None):
+    """边界核证只读接口：每条边界附三数核验（两点之差、间隙、当时超时）。"""
+    conn = connect()
+    try:
+        rows = gap_boundary_proof.list_boundaries(conn, visitor_id, session_id)
+        return [
+            {**row, "check": gap_boundary_proof.verify(conn, row)} for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+@router.get("/gap-boundaries/{boundary_id}")
+def get_gap_boundary(boundary_id: int):
+    conn = connect()
+    try:
+        row = gap_boundary_proof.get_boundary(conn, boundary_id)
+        if not row:
+            raise HTTPException(404, "边界不存在")
+        return {**row, "check": gap_boundary_proof.verify(conn, row)}
     finally:
         conn.close()
 

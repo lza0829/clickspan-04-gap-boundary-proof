@@ -1,6 +1,7 @@
 import json
 
 from app.db import FIXTURES_DIR, connect
+from app.modules import gap_boundary_proof
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS session_proofs (
 def init_db():
     conn = connect()
     conn.executescript(SCHEMA)
+    gap_boundary_proof.ensure_schema(conn)
     row = conn.execute("SELECT value FROM settings WHERE key='idle_timeout_sec'").fetchone()
     if not row:
         conn.execute(
@@ -87,23 +89,20 @@ def _seed_fixtures(conn):
             "INSERT INTO visitors(id, label, created_at) VALUES (?,?,?)",
             (v["id"], v["label"], v["created_at"]),
         )
-    # 基座：按访客整段落进一个 open 会话（超时切分留给功能题空桩）
+    # 与收流同路径：逐击点挂会话，超隙即切开并同事务落边界
+    timeout = idle_timeout_sec(conn)
     for visitor_id, group in _group_hits(data.get("hits", [])).items():
         group = sorted(group, key=lambda h: (h["event_ts"], h["id"]))
-        sid = f"S-{visitor_id}-1"
-        conn.execute(
-            "INSERT INTO sessions(id, visitor_id, started_at, ended_at, hit_count, status) VALUES (?,?,?,?,?,?)",
-            (
-                sid,
-                visitor_id,
-                group[0]["event_ts"],
-                group[-1]["event_ts"],
-                len(group),
-                "open",
-            ),
-        )
-        hit_ids = []
+        counter = {"n": 0}
+
+        def next_sid():
+            counter["n"] += 1
+            return f"S-{visitor_id}-{counter['n']}"
+
         for h in group:
+            sid = gap_boundary_proof.attach_hit(
+                conn, visitor_id, h, timeout, next_sid
+            )
             conn.execute(
                 """
                 INSERT INTO hits(id, visitor_id, session_id, event_ts, page_path, event_name, channel)
@@ -119,21 +118,42 @@ def _seed_fixtures(conn):
                     h.get("channel", "primary"),
                 ),
             )
-            hit_ids.append(h["id"])
-        conn.execute(
-            """
-            INSERT INTO session_proofs(session_id, visitor_id, hit_ids_json, hit_count, started_at, ended_at, created_at)
-            VALUES (?,?,?,?,?,?,datetime('now'))
-            """,
-            (
-                sid,
-                visitor_id,
-                json.dumps(hit_ids, ensure_ascii=False),
-                len(hit_ids),
-                group[0]["event_ts"],
-                group[-1]["event_ts"],
-            ),
-        )
+            conn.execute(
+                """
+                UPDATE sessions
+                SET hit_count = hit_count + 1,
+                    ended_at = CASE
+                      WHEN ended_at IS NULL OR ended_at < ? THEN ?
+                      ELSE ended_at END
+                WHERE id=?
+                """,
+                (h["event_ts"], h["event_ts"], sid),
+            )
+        for sess in conn.execute(
+            "SELECT * FROM sessions WHERE visitor_id=? ORDER BY started_at",
+            (visitor_id,),
+        ).fetchall():
+            hit_ids = [
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id FROM hits WHERE session_id=? ORDER BY event_ts, id",
+                    (sess["id"],),
+                ).fetchall()
+            ]
+            conn.execute(
+                """
+                INSERT INTO session_proofs(session_id, visitor_id, hit_ids_json, hit_count, started_at, ended_at, created_at)
+                VALUES (?,?,?,?,?,?,datetime('now'))
+                """,
+                (
+                    sess["id"],
+                    visitor_id,
+                    json.dumps(hit_ids, ensure_ascii=False),
+                    len(hit_ids),
+                    sess["started_at"],
+                    sess["ended_at"],
+                ),
+            )
 
 
 def _group_hits(hits):

@@ -194,6 +194,16 @@ a { color: inherit; text-decoration: none; }
   gap: 1rem;
   margin-bottom: 0.55rem;
 }
+.gap-note {
+  margin: 0 0 0.6rem;
+  padding: 0.45rem 0.7rem;
+  background: #fdf0e4;
+  border: 1px dashed var(--copper);
+  border-radius: 4px;
+  color: var(--char);
+  font-size: 0.82rem;
+}
+.gap-note b { color: var(--copper); }
 .beads {
   display: flex;
   flex-wrap: wrap;

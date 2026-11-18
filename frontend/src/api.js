@@ -21,5 +21,7 @@ export const api = {
   ingest: () => req('/api/ingest/run', { method: 'POST' }),
   proofs: (sessionId) =>
     req(sessionId ? `/api/session-proofs?session_id=${encodeURIComponent(sessionId)}` : '/api/session-proofs'),
+  gapBoundaries: (sessionId) =>
+    req(sessionId ? `/api/gap-boundaries?session_id=${encodeURIComponent(sessionId)}` : '/api/gap-boundaries'),
   settings: () => req('/api/settings'),
 }
